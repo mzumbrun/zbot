@@ -1,0 +1,26 @@
+# colcon output (normally in ~/zbot_ws, listed here in case of an in-repo build)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Recordings and large data: rosbags locally, datasets/policies on the HF Hub
+rosbag2_*/
+*.bag
+*.mcap
+outputs/
+data/
+
+# PlatformIO
+firmware/**/.pio/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
