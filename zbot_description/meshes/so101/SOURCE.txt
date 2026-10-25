@@ -1,0 +1,1 @@
+TheRobotStudio/SO-ARM100 @ a758567, Simulation/SO101/so101_new_calib.urdf (Apache-2.0)
