@@ -9,7 +9,7 @@ for f in "$HERE"/udev/*.rules; do
   echo "   installed $(basename "$f")"
 done
 sudo udevadm control --reload-rules
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=tty --action=add
 
 echo "== dialout group"
 if id -nG "$USER" | grep -qw dialout; then

@@ -24,3 +24,4 @@ firmware/**/.pio/
 .idea/
 *.swp
 .DS_Store
+arm_lab/logs/
