@@ -106,10 +106,12 @@ is and ignores commands.
 | Symptom | Fix |
 |---|---|
 | `Failed to populate field: must be real number, not str` | Replace the placeholder with a number |
-| ERROR: calibration changed since the params file was made | Run `post_calibrate.py` (or copy the calibration file from the other laptop) |
+| ERROR: calibration changed since the params file was made; enable refused | Run `post_calibrate.py` (or copy the calibration file from the other laptop) |
 | `Calibration … doesn't match the motors` | Run `lerobot-calibrate`, then the post-calibration routine |
 | `Command ignored: torque off, faulted, or releasing` | Call `enable true` |
 | Port busy / can't open | Another script or bridge is running; stop it |
 | `std_srvs` not found | `sudo apt install ros-jazzy-std-srvs` |
+| `Couldn't parse params file … Cannot have a value before ros__parameters` | YAML indentation: values need 4 spaces, `ros__parameters:` 2, no tabs |
+| `elbow_flex target 5000+ clamped` | You sent degrees; the topic takes radians (90° = 1.571) |
 
 *Last updated: 2026-10-26*

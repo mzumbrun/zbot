@@ -13,7 +13,8 @@ with ROS sourced on top, in its own terminal, from ~/zbot_ws/src/zbot:
 Each arm has its own params file, zbot_arm/config/<robot_id>.yaml, holding its robot_id,
 port and everything that depends on its calibration (offsets, rest pose). It is written by
 arm_lab/post_calibrate.py. Re-run that script after EVERY lerobot-calibrate;
-the bridge warns at startup if the calibration has changed since the file was written.
+if the calibration has changed since the file was written, the bridge logs an ERROR and
+refuses ~/enable (it still publishes /joint_states).
 
 Interfaces:
     pub  /joint_states                  sensor_msgs/JointState  URDF radians, every tick
@@ -35,6 +36,7 @@ URDF radians):
                       (default: wrist_roll ±90, everything else from calibration)
     rest_pose         pose to park at before releasing torque       (unset; post_calibrate.py)
     calib_stamp       hash of the calibration the params file was made from (post_calibrate.py)
+    allow_stale_calib enable even if calib_stamp doesn't match the calibration (false)
     max_vel_deg_s     body-joint slew limit                         (30.0)
     gripper_max_vel   gripper slew limit, %/s                       (50.0)
     track_err_deg     watchdog: body-joint lag that counts as stuck (15.0)
@@ -166,6 +168,7 @@ class SO101Bridge(Node):
         user_hi = list(P("limit_max", DEFAULT_LIMIT_MAX).value)
         rest = list(P("rest_pose", [NAN] * 6).value)
         stamp_param = P("calib_stamp", "").value
+        allow_stale = P("allow_stale_calib", False).value
         self.vel = P("max_vel_deg_s", 30.0).value
         self.gvel = P("gripper_max_vel", 50.0).value
         self.track_err = P("track_err_deg", 15.0).value
@@ -206,13 +209,17 @@ class SO101Bridge(Node):
                 stamp_now = calib_stamp(calib_path(self.robot, robot_id))
             except OSError:
                 stamp_now = None
+            self.stale = False
             if not stamp_param:
                 log.warn(f"No calib_stamp: offsets / rest_pose may not match this calibration. "
                          f"Run {POST_CAL} and pass its params file.")
             elif stamp_now and stamp_param != stamp_now:
+                self.stale = not allow_stale
                 log.error(f"Calibration changed since the params file was made "
                           f"({stamp_param} -> {stamp_now}). Offsets and rest_pose are STALE: "
-                          f"run {POST_CAL} before enabling.")
+                          f"run {POST_CAL}. " +
+                          ("allow_stale_calib is set, enabling anyway." if allow_stale else
+                           "Enable is BLOCKED; /joint_states still publishes (RViz may be off)."))
 
             # --- soft limits: calibration, optionally tightened by limit_min/max
             self.lim = {}
@@ -299,6 +306,12 @@ class SO101Bridge(Node):
             self.target[name] = c
 
     def on_enable(self, req, resp):
+        if req.data and self.stale:
+            resp.success = False
+            resp.message = (f"Refused: params file is for a different calibration. Run {POST_CAL} "
+                            "(or set allow_stale_calib:=true to override).")
+            self.get_logger().error(resp.message)
+            return resp
         if req.data:
             meas = self.read_pos()
             self.setpoint = dict(meas)
