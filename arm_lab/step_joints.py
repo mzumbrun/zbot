@@ -10,6 +10,7 @@ Run in the LeRobot venv (`lr`), arm on 12 V, from ~/zbot_ws/src/zbot:
     python arm_lab/step_joints.py                       # all joints, defaults
     python arm_lab/step_joints.py --joints elbow_flex   # just one joint
     python arm_lab/step_joints.py --read                # read-only, arm limp
+    python arm_lab/step_joints.py --p 32 --joints shoulder_lift elbow_flex   # try a higher P gain
 
 Safety:
   - You pose the arm by hand at mid-range before any motion (torque off),
@@ -42,6 +43,8 @@ def parse_args():
     p.add_argument("--gripper-step", type=float, default=20.0, help="gripper step, %% open (default 20)")
     p.add_argument("--speed", type=float, default=20.0, help="ramp speed, units/s (default 20)")
     p.add_argument("--settle", type=float, default=0.5, help="wait after each move, s (default 0.5)")
+    p.add_argument("--p", type=int, default=16,
+                   help="servo position P gain written at connect (LeRobot default 16; try 24, 32)")
     p.add_argument("--read", action="store_true", help="read-only: print positions live, no motion")
     return p.parse_args()
 
@@ -88,11 +91,15 @@ def read_only(robot):
 
 def main():
     a = parse_args()
-    cfg = SO101FollowerConfig(port=a.port, id=a.id, disable_torque_on_disconnect=False)
+    cfg = SO101FollowerConfig(port=a.port, id=a.id, disable_torque_on_disconnect=False,
+                              position_p_coefficient=a.p)
     robot = SO101Follower(cfg)
     robot.connect(calibrate=False)
     if not robot.is_calibrated:
         sys.exit(f"Calibration for '{a.id}' doesn't match the motors. Run lerobot-calibrate first.")
+
+    if not 1 <= a.p <= 64:
+        sys.exit("--p must be between 1 and 64 (16 is the LeRobot default).")
 
     if a.read:
         read_only(robot)
@@ -109,17 +116,17 @@ def main():
     robot.send_action({f"{j}.pos": v for j, v in hold.items()})  # goal = present before torque on
     robot.bus.enable_torque()
     home = dict(hold)
-    print("Torque ON, holding start pose:")
+    print(f"Torque ON (P = {a.p}), holding start pose:")
     for j in JOINTS:
         print(f"  {j:14s} {home[j]:7.1f}")
 
     # --- log file
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"step_joints_{dt.datetime.now():%Y%m%d_%H%M%S}.csv"
+    log_path = log_dir / f"step_joints_P{a.p}_{dt.datetime.now():%Y%m%d_%H%M%S}.csv"
     f = open(log_path, "w", newline="")
     w = csv.writer(f)
-    w.writerow(["time_s", "joint", "phase", "commanded", "measured", "error", "current_mA", "bus_V"])
+    w.writerow(["time_s", "p_gain", "joint", "phase", "commanded", "measured", "error", "current_mA", "bus_V"])
     t0 = time.time()
 
     try:
@@ -138,7 +145,7 @@ def main():
                 meas = read_pos(robot)[joint]
                 cur, volt = read_extra(robot, joint)
                 err = meas - target
-                w.writerow([f"{time.time() - t0:.2f}", joint, phase, f"{target:.2f}", f"{meas:.2f}",
+                w.writerow([f"{time.time() - t0:.2f}", a.p, joint, phase, f"{target:.2f}", f"{meas:.2f}",
                             f"{err:.2f}", cur, volt])
                 f.flush()
                 print(f"  {phase:7s} cmd {target:7.1f}  meas {meas:7.1f}  err {err:+6.2f}{unit}"
