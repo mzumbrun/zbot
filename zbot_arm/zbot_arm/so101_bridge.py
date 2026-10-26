@@ -8,10 +8,11 @@ This node needs BOTH LeRobot (in ~/lerobot-venv) and rclpy (ROS), so it runs fro
 with ROS sourced on top, in its own terminal, from ~/zbot_ws/src/zbot:
 
     lr && ros && source ~/zbot_ws/install/setup.bash
-    python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/so101_follower.yaml
+    python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/zbot_follower_1.yaml
 
-The params file holds everything that depends on the arm's calibration (offsets, rest pose)
-and is written by arm_lab/post_calibrate.py. Re-run that script after EVERY lerobot-calibrate;
+Each arm has its own params file, zbot_arm/config/<robot_id>.yaml, holding its robot_id,
+port and everything that depends on its calibration (offsets, rest pose). It is written by
+arm_lab/post_calibrate.py. Re-run that script after EVERY lerobot-calibrate;
 the bridge warns at startup if the calibration has changed since the file was written.
 
 Interfaces:
@@ -81,7 +82,7 @@ GRIPPER_LOWER_RAD = -0.174533
 GRIPPER_UPPER_RAD = 1.74533
 
 # Fallback offsets if no params file is given. The real values live in
-# zbot_arm/config/so101_follower.yaml, written by arm_lab/post_calibrate.py.
+# zbot_arm/config/<robot_id>.yaml, written by arm_lab/post_calibrate.py.
 DEFAULT_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, -78.0, 0.0]
 
 NAN = float("nan")

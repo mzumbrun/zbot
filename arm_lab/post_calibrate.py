@@ -5,14 +5,16 @@ Run this EVERY time you recalibrate the follower. Calibration moves each joint's
 so anything stored in LeRobot units goes stale: the wrist_roll offset and the rest pose.
 (Soft limits are not stored — the bridge derives them from the calibration at startup.)
 
-It writes zbot_arm/config/so101_follower.yaml, stamped with a hash of the calibration file;
+It writes zbot_arm/config/<id>.yaml (one file per arm, named after its LeRobot id), holding
+robot_id, port, the offsets and the rest pose, stamped with a hash of the calibration file;
 the bridge warns at startup if that stamp no longer matches.
 
 Procedure, arm on 12 V, bridge NOT running (it holds the serial port):
     lerobot-calibrate ...                                    # 1. calibrate as usual
     ros && ros2 launch zbot_description display_so101.launch.py   # 2. terminal A: model at zero
-    lr && cd ~/zbot_ws/src/zbot && python arm_lab/post_calibrate.py   # 3. terminal B
-    git add zbot_arm/config/so101_follower.yaml && git commit   # 4. keep it with the code
+    lr && cd ~/zbot_ws/src/zbot && python arm_lab/post_calibrate.py --id <id> --port <port>
+                                                             # 3. terminal B (defaults: arm 1)
+    git add zbot_arm/config/<id>.yaml && git commit          # 4. keep it with the code
 
 The script keeps the arm limp throughout and asks for two poses:
   a. wrist_roll matched to the RViz model (all sliders at 0)  -> wrist_roll offset
@@ -30,8 +32,8 @@ from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
 JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = REPO / "zbot_arm" / "config" / "so101_follower.yaml"
-OWNED = ("calib_stamp", "margin_deg", "offsets_deg", "rest_pose")
+CONFIG_DIR = REPO / "zbot_arm" / "config"
+OWNED = ("robot_id", "port", "calib_stamp", "margin_deg", "offsets_deg", "rest_pose")
 WRIST_ROLL_DEFAULT = (-90.0, 90.0)  # bridge default limit for the un-swept wrist_roll
 
 
@@ -39,10 +41,14 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--port", default="/dev/so101_follower")
     p.add_argument("--id", default="zbot_follower_1")
-    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"params file (default {DEFAULT_OUT})")
+    p.add_argument("--out", type=Path, default=None,
+                   help="params file (default zbot_arm/config/<id>.yaml)")
     p.add_argument("--margin", type=float, default=None,
                    help="soft-limit margin, degrees (default: keep the file's value, else 5)")
-    return p.parse_args()
+    a = p.parse_args()
+    if a.out is None:
+        a.out = CONFIG_DIR / f"{a.id}.yaml"
+    return a
 
 
 def calib_stamp(path):
@@ -97,6 +103,8 @@ def write_params(path, params, extras):
         "# every lerobot-calibrate. Values are LeRobot units (degrees, gripper 0-100).",
         "so101_bridge:",
         "  ros__parameters:",
+        f'    robot_id: "{params["robot_id"]}"',
+        f'    port: "{params["port"]}"',
         f'    calib_stamp: "{params["calib_stamp"]}"',
         f"    margin_deg: {params['margin_deg']:.1f}",
         f"    offsets_deg: {fmt_list(params['offsets_deg'])}",
@@ -171,7 +179,7 @@ def main():
     finally:
         robot.disconnect()
 
-    write_params(a.out, {"calib_stamp": stamp, "margin_deg": margin,
+    write_params(a.out, {"robot_id": a.id, "port": a.port, "calib_stamp": stamp, "margin_deg": margin,
                          "offsets_deg": offsets, "rest_pose": rest}, extras)
     try:
         shown = a.out.relative_to(REPO)

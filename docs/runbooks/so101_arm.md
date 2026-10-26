@@ -1,7 +1,8 @@
 # SO-101 follower arm
 
 Arm: `zbot_follower_1` on `/dev/so101_follower`, 12 V. Driver: `zbot_arm/so101_bridge.py`.
-Params: `zbot_arm/config/so101_follower.yaml` (written by `arm_lab/post_calibrate.py`).
+Params: `zbot_arm/config/zbot_follower_1.yaml`, one file per arm named after its ID (written by
+`arm_lab/post_calibrate.py`). Another arm: use its ID, port and params file in the commands below.
 
 **Rule:** only one program can hold the serial port. Stop the bridge before running
 `step_joints.py`, `post_calibrate.py`, or `lerobot-calibrate`, and vice versa.
@@ -15,7 +16,7 @@ Params: `zbot_arm/config/so101_follower.yaml` (written by `arm_lab/post_calibrat
    ```
    lr && ros && source ~/zbot_ws/install/setup.bash
    cd ~/zbot_ws/src/zbot
-   python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/so101_follower.yaml
+   python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/zbot_follower_1.yaml
    ```
    Check the startup log: no ERROR about the calibration stamp, and the soft limits look sane.
 3. **Terminal B — RViz** (optional):
@@ -58,14 +59,14 @@ limits update themselves.
 3. **Terminal B:**
    ```
    lr && cd ~/zbot_ws/src/zbot
-   python arm_lab/post_calibrate.py
+   python arm_lab/post_calibrate.py            # other arms: --id <ID> --port <PORT>
    ```
    - Check the printed limits look like each joint's real swept range.
    - **[a]** Turn wrist_roll to match the model → Enter.
    - **[b]** Fold the arm to rest → Enter.
 4. Commit the result:
    ```
-   git add zbot_arm/config/so101_follower.yaml
+   git add zbot_arm/config/zbot_follower_1.yaml
    git commit -m "Recalibrate zbot_follower_1"
    git push
    ```
@@ -111,4 +112,4 @@ is and ignores commands.
 | Port busy / can't open | Another script or bridge is running; stop it |
 | `std_srvs` not found | `sudo apt install ros-jazzy-std-srvs` |
 
-*Last updated: 2026-10-25*
+*Last updated: 2026-10-26*
