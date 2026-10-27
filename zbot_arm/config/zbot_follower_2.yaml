@@ -1,0 +1,10 @@
+# SO-101 follower bridge params. Written by arm_lab/post_calibrate.py — re-run it after
+# every lerobot-calibrate. Values are LeRobot units (degrees, gripper 0-100).
+so101_bridge:
+  ros__parameters:
+    robot_id: "zbot_follower_2"
+    port: "/dev/so101_follower_2"
+    calib_stamp: "7783f2fb73bf"
+    margin_deg: 5.0
+    offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    rest_pose: [-2.0, -92.3, 93.8, 11.8, 5.6, 4.1]

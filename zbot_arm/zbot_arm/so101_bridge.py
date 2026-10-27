@@ -31,6 +31,8 @@ URDF radians):
     offsets_deg       per-joint offset added after the sign, degrees (DEFAULT_OFFSETS_DEG);
                       gripper offset is ignored. Set by post_calibrate.py.
     p_gain            servo P gain written at connect               (32, see docs/arm_tuning.md)
+    torque_limit      body-joint servo Torque_Limit, 0-1000, written before every enable
+                      (1000 = full). Use ~300 for a first enable on a new or rebuilt arm.
     margin_deg        soft limits sit this far inside the calibrated range (5.0)
     limit_min/max     optional TIGHTER limits, joint order; nan = use calibration
                       (default: wrist_roll ±90, everything else from calibration)
@@ -51,15 +53,21 @@ margin_deg. They therefore follow every recalibration automatically. wrist_roll 
 cable allows. limit_min/max can only tighten, never widen past calibration.
 
 Safety:
-  - Commands are ignored until ~/enable true. Enable writes goal = present before torque on,
-    so nothing moves, and any stale target is discarded.
+  - Commands are ignored until ~/enable true.
+  - Enable is REFUSED unless it can verify the arm won't move when torque comes on:
+      1. every body joint is inside its calibrated range (a servo outside its stored position
+         limits clamps its goal to the limit and drives there at full speed);
+      2. goal = present is written in raw counts and READ BACK from every servo (the write is
+         a broadcast with no acknowledgement; a servo at its power-up goal of 0 would drive to
+         its Min limit). Retried 3 times, then refused.
+    Torque_Limit is written before torque on, and any stale target is discarded.
   - Targets are clamped to the soft limits; unknown joints and non-finite values are rejected.
   - The goal sent to the servos slews toward the target, so a distant target is never a
     full-speed jump.
   - Watchdog: a body joint lagging its setpoint by > track_err_deg for > track_err_time_s
     (collision, stall), or ~1 s of failed bus reads, freezes the arm where it is. Torque stays
     on, so nothing drops; commands are refused until ~/enable true. The gripper is exempt so
-    it can squeeze objects.
+    it can squeeze objects. A fault logs every servo's raw goal and present position.
   - ~/enable false and Ctrl-C ramp to rest_pose, then release torque. Without a rest_pose,
     enable false releases immediately (support the arm) and Ctrl-C leaves torque ON, holding.
 """
@@ -93,6 +101,9 @@ DEFAULT_LIMIT_MIN = [NAN, NAN, NAN, NAN, -90.0, NAN]
 DEFAULT_LIMIT_MAX = [NAN, NAN, NAN, NAN, 90.0, NAN]
 
 POST_CAL = "arm_lab/post_calibrate.py"
+
+GOAL_TOL_COUNTS = 20   # goal read-back must be within this of present (~1.8°; arm may drift in hand)
+GOAL_TRIES = 3
 
 
 def calib_stamp(path):
@@ -163,6 +174,7 @@ class SO101Bridge(Node):
         self.signs = list(P("signs", [1.0] * 6).value)
         self.offsets = list(P("offsets_deg", DEFAULT_OFFSETS_DEG).value)
         p_gain = P("p_gain", 32).value
+        self.torque_limit = int(P("torque_limit", 1000).value)
         margin = P("margin_deg", 5.0).value
         user_lo = list(P("limit_min", DEFAULT_LIMIT_MIN).value)
         user_hi = list(P("limit_max", DEFAULT_LIMIT_MAX).value)
@@ -179,6 +191,8 @@ class SO101Bridge(Node):
             raise ValueError("signs and offsets_deg must each have 6 entries (one per joint)")
         if len(user_lo) != 6 or len(user_hi) != 6:
             raise ValueError("limit_min / limit_max need 6 entries each (nan = from calibration)")
+        if not 0 <= self.torque_limit <= 1000:
+            raise ValueError("torque_limit must be 0-1000")
         self.sign = dict(zip(JOINTS, self.signs))
         self.off = dict(zip(JOINTS, self.offsets))
 
@@ -221,6 +235,9 @@ class SO101Bridge(Node):
                           ("allow_stale_calib is set, enabling anyway." if allow_stale else
                            "Enable is BLOCKED; /joint_states still publishes (RViz may be off)."))
 
+            # --- full calibrated range (no margin): the servo's own position limits
+            self.cal = calib_limits(self.robot.bus, 0.0)
+
             # --- soft limits: calibration, optionally tightened by limit_min/max
             self.lim = {}
             for i, (j, (clo, chi)) in enumerate(calib_limits(self.robot.bus, margin).items()):
@@ -232,6 +249,10 @@ class SO101Bridge(Node):
                 self.lim[j] = (lo, hi)
             log.info("Soft limits (LeRobot units): " +
                      ", ".join(f"{j} [{lo:.0f}, {hi:.0f}]" for j, (lo, hi) in self.lim.items()))
+            if self.torque_limit < 1000:
+                log.warn(f"torque_limit = {self.torque_limit} (reduced): the arm may sag under load.")
+            else:
+                log.info("torque_limit = 1000 (full). Enable checks: calibrated range + goal read-back.")
 
             # --- rest pose
             if len(rest) == 6 and all(math.isfinite(v) for v in rest):
@@ -282,6 +303,32 @@ class SO101Bridge(Node):
     def send(self, pose):
         self.robot.send_action({f"{j}.pos": v for j, v in pose.items()})
 
+    def raw(self, reg):
+        """One register from every servo, raw counts (acknowledged reads)."""
+        return {j: int(self.robot.bus.read(reg, j, normalize=False)) for j in JOINTS}
+
+    def preload_goal(self):
+        """With torque OFF: write goal = present (raw) and verify it on every servo.
+
+        Returns None when every goal matches, else {joint: (goal, present)} for the misses.
+        """
+        bad = None
+        for _ in range(GOAL_TRIES):
+            pres = self.raw("Present_Position")
+            self.robot.bus.sync_write("Goal_Position", pres, normalize=False)
+            goal = self.raw("Goal_Position")
+            pres = self.raw("Present_Position")  # re-read: the arm may drift in your hand
+            bad = {j: (goal[j], pres[j]) for j in JOINTS if abs(goal[j] - pres[j]) > GOAL_TOL_COUNTS}
+            if not bad:
+                return None
+        return bad
+
+    def refuse(self, resp, msg):
+        resp.success = False
+        resp.message = msg
+        self.get_logger().error(msg)
+        return resp
+
     # ---------- ROS callbacks
     def on_command(self, msg):
         log = self.get_logger()
@@ -307,20 +354,41 @@ class SO101Bridge(Node):
 
     def on_enable(self, req, resp):
         if req.data and self.stale:
-            resp.success = False
-            resp.message = (f"Refused: params file is for a different calibration. Run {POST_CAL} "
-                            "(or set allow_stale_calib:=true to override).")
-            self.get_logger().error(resp.message)
-            return resp
+            return self.refuse(resp, f"Refused: params file is for a different calibration. Run "
+                                     f"{POST_CAL} (or set allow_stale_calib:=true to override).")
         if req.data:
-            meas = self.read_pos()
-            self.setpoint = dict(meas)
-            self.target = dict(meas)
-            self.err_t = {j: 0.0 for j in BODY}
-            self.send(meas)  # goal = present before torque on
-            self.robot.bus.enable_torque()
+            # If torque is already on (re-enable, or clearing a fault) it stays on: goal = present
+            # while holding is harmless, and dropping torque here would drop the arm.
+            try:
+                meas = self.read_pos()
+
+                # 1. inside the calibrated range, or the servo clamps its goal and jumps
+                out = [f"{j} {meas[j]:.1f} not in [{self.cal[j][0]:.1f}, {self.cal[j][1]:.1f}]"
+                       for j in BODY if not self.cal[j][0] <= meas[j] <= self.cal[j][1]]
+                if out:
+                    return self.refuse(resp, "Refused: outside calibrated range (servo would jump): "
+                                       + "; ".join(out) + ". Move it into range by hand, or recalibrate.")
+
+                # 2. torque limit, then goal = present, verified by read-back
+                for j in BODY:
+                    self.robot.bus.write("Torque_Limit", j, self.torque_limit, normalize=False)
+                bad = self.preload_goal()
+                if bad:
+                    return self.refuse(resp, "Refused: goal did not verify after "
+                                       f"{GOAL_TRIES} tries (goal, present counts): " +
+                                       ", ".join(f"{j} {g}/{p}" for j, (g, p) in bad.items()) +
+                                       ". Check cables; torque state unchanged.")
+
+                meas = self.read_pos()
+                self.setpoint = dict(meas)
+                self.target = dict(meas)
+                self.err_t = {j: 0.0 for j in BODY}
+                self.robot.bus.enable_torque()
+            except Exception as e:
+                return self.refuse(resp, f"Refused: bus error during enable ({e}); "
+                                         "torque state unchanged.")
             self.torque, self.faulted, self.releasing = True, False, False
-            resp.message = "Torque ON, holding current pose."
+            resp.message = (f"Torque ON (limit {self.torque_limit}), holding current pose.")
         elif not self.torque:
             resp.message = "Torque already off."
         elif self.rest is not None and not self.faulted:
@@ -337,6 +405,11 @@ class SO101Bridge(Node):
 
     def fault(self, reason, meas=None):
         self.faulted, self.releasing = True, False
+        try:  # forensic: what each servo was actually told vs where it is
+            goal, pres = self.raw("Goal_Position"), self.raw("Present_Position")
+            snap = ", ".join(f"{j} {goal[j]}/{pres[j]}" for j in JOINTS)
+        except Exception:
+            snap = "unavailable"
         if meas is not None:
             self.setpoint = dict(meas)
             self.target = dict(meas)
@@ -344,7 +417,8 @@ class SO101Bridge(Node):
                 self.send(meas)  # stop pushing; hold where it actually is
             except Exception:
                 pass
-        self.get_logger().error(f"FAULT: {reason}. Holding. Call ~/enable true to reset.")
+        self.get_logger().error(f"FAULT: {reason}. Raw goal/present: {snap}. "
+                                "Holding. Call ~/enable true to reset.")
 
     def tick(self):
         now = time.monotonic()
