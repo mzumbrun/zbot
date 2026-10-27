@@ -157,7 +157,7 @@ write test point to a cable or connector on that joint.
 - Edited `zbot_arm/*.py`: `cd ~/zbot_ws && colcon build --packages-select zbot_arm`
   (skip if the workspace was built with `--symlink-install`).
 - Changed P gain: retest with `step_joints.py --p <n>` and record the result in
-  `docs/arm_tuning.md` (current: P = 32; P = 40 makes shoulder_pan oscillate).
+  `docs/arm_tuning.md` (current: P = 16, smoothest; 32 tracks tighter but shoulder_pan stutters; 40 oscillates).
 
 ## Quick fixes
 

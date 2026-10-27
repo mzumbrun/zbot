@@ -14,7 +14,7 @@ Re-run from check 2 after any recalibration or servo replacement.
 | Calibration date | |
 | calib_stamp (from post_calibrate.py) | |
 | Measured wrist_roll offset (°) | |
-| P gain | 32 |
+| P gain | 16 |
 | torque_limit for first enable | 300 (new or rebuilt arm) / 1000 |
 | Test date | |
 

@@ -171,9 +171,10 @@ class SO101Bridge(Node):
         port = P("port", "/dev/so101_follower").value
         robot_id = P("robot_id", "zbot_follower_1").value
         rate = P("rate_hz", 30.0).value
+        self.rate = rate
         self.signs = list(P("signs", [1.0] * 6).value)
         self.offsets = list(P("offsets_deg", DEFAULT_OFFSETS_DEG).value)
-        p_gain = P("p_gain", 32).value
+        p_gain = P("p_gain", 16).value
         self.torque_limit = int(P("torque_limit", 1000).value)
         margin = P("margin_deg", 5.0).value
         user_lo = list(P("limit_min", DEFAULT_LIMIT_MIN).value)
@@ -470,13 +471,22 @@ class SO101Bridge(Node):
                 self.get_logger().info("At rest, torque OFF.")
 
     # ---------- shutdown (runs after the ROS context is gone: bus only, print not log)
-    def ramp_blocking(self, goal, hz=50):
-        start = self.read_pos()
-        dur = max(abs(goal[j] - start[j]) / self.vmax(j) for j in JOINTS)
-        n = max(1, int(dur * hz))
-        for i in range(1, n + 1):
-            self.send({j: start[j] + (goal[j] - start[j]) * i / n for j in JOINTS})
-            time.sleep(1.0 / hz)
+    def ramp_blocking(self, goal):
+        """Same motion as enable false: slew the setpoint toward goal at the tick rate.
+
+        Starts from the current setpoint (what the servos are already holding), not from a fresh
+        position read, so there is no step at the start; fixed-period timing so the per-step
+        increments stay even.
+        """
+        period = 1.0 / self.rate
+        nxt = time.monotonic()
+        while any(abs(goal[j] - self.setpoint[j]) > 1e-6 for j in JOINTS):
+            for j in JOINTS:
+                step = self.vmax(j) * period
+                self.setpoint[j] += max(-step, min(step, goal[j] - self.setpoint[j]))
+            self.send(self.setpoint)
+            nxt += period
+            time.sleep(max(0.0, nxt - time.monotonic()))
 
     def close(self):
         try:
