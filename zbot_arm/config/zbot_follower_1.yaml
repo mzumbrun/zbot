@@ -2,6 +2,8 @@
 # every lerobot-calibrate. Values are LeRobot units (degrees, gripper 0-100).
 so101_bridge:
   ros__parameters:
+    robot_id: "zbot_follower_1"
+    port: "/dev/so101_follower"
     calib_stamp: "bac3b71bc65a"
     margin_deg: 5.0
     offsets_deg: [0.0, 0.0, 0.0, 0.0, -90.2, 0.0]

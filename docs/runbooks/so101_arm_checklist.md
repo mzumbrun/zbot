@@ -7,7 +7,7 @@ Re-run from check 2 after any recalibration or servo replacement.
 
 | Field | Value |
 | --- | --- |
-| Arm ID (robot_id) | |
+| Arm ID (robot_id, namespace) | |
 | Serial port (udev name) | /dev/ |
 | Params file | zbot_arm/config/          .yaml |
 | Laptop (Victus / Upc) | |
@@ -20,14 +20,14 @@ Re-run from check 2 after any recalibration or servo replacement.
 
 ## Before you start
 
-Each arm needs its own ID and port name; its params file is `zbot_arm/config/<ID>.yaml`. The commands below use `<ID>` and `<PORT>`; substitute this arm's values (`zbot_follower_1` / `/dev/so101_follower`, `zbot_follower_2` / `/dev/so101_follower_2`). IDs are `zbot_…`, ports are `/dev/so101_…`.
+Each arm has its own ID, port name and params file `zbot_arm/config/<ID>.yaml`. The commands below use `<ID>` and `<PORT>`; substitute this arm's values (`zbot_follower_1` / `/dev/so101_follower`, `zbot_follower_2` / `/dev/so101_follower_2`). IDs are `zbot_…`, ports are `/dev/so101_…`. Every ROS name for the arm starts with `/<ID>/`.
 
 - [ ] Arm assembled, 12 V supply connected, USB plugged in
 - [ ] New arm or replaced servo: IDs set with `lerobot-setup-motors`, **one servo on the board at a time**, other arms unplugged
 - [ ] udev rule gives this arm its own name: `ls -l <PORT>`
 - [ ] Calibrated, **every joint swept stop to stop** (gripper fully open and closed): `lerobot-calibrate --robot.type=so101_follower --robot.port=<PORT> --robot.id=<ID>`
 - [ ] Calibration table: every body joint spans roughly 2,200–2,700 counts
-- [ ] Two terminals ready: **A** = `ros && source ~/zbot_ws/install/setup.bash`, **B** = `lr && cd ~/zbot_ws/src/zbot`
+- [ ] Terminals: **A**, **C**, **D** = `ros && source ~/zbot_ws/install/setup.bash`; **B** = `lr && cd ~/zbot_ws/src/zbot` (arm_lab scripts only)
 - [ ] Only one program on the port at a time: stop the bridge before running any `arm_lab` script
 
 ## The 10 checks
@@ -38,10 +38,11 @@ Do them in order; each relies on the one before. Joint order everywhere: shoulde
 
 ```
 cd ~/zbot_ws/src/zbot && git status
-cd ~/zbot_ws && colcon build --packages-select zbot_arm
+cd ~/zbot_ws && colcon build --symlink-install --packages-select zbot_arm zbot_description
 ```
 
 - [ ] Pass: build has no errors and `git status` is clean
+- [ ] Pass: `ls ~/zbot_ws/install/zbot_arm/share/zbot_arm/launch ~/zbot_ws/install/zbot_arm/share/zbot_arm/config` lists the launch files and this arm's YAML
 
 ### 2. Create the params file
 
@@ -51,40 +52,41 @@ Terminal A: `ros2 launch zbot_description display_so101.launch.py` (sliders at 0
 python arm_lab/post_calibrate.py --id <ID> --port <PORT>
 ```
 
-Check the printed limits, match wrist_roll to the model [a], fold the arm to rest [b]. It writes `zbot_arm/config/<ID>.yaml` (including `robot_id` and `port`); commit it. New or rebuilt arm: add `torque_limit: 300` to the YAML for now.
+Check the printed limits, match wrist_roll to the model [a], fold the arm to rest [b]. It writes `zbot_arm/config/<ID>.yaml`; commit it. New YAML file: re-run the build in check 1 once. New or rebuilt arm: add `torque_limit: 300` to the YAML for now.
 
 - [ ] Pass: limits look like each joint's swept range; wrist_roll offset recorded above
-- [ ] Pass: no "Outside the soft limits" at [b] (re-pose with **r**; never accept)
+- [ ] Pass: rest pose taken with the arm **unsupported**, and no "Outside the calibrated range" at [b] (re-pose with **r**; never accept)
+- [ ] Pass: the YAML has `robot_id: "<ID>"` and `port: "<PORT>"`
 
 ### 3. Bridge startup
 
-Stop RViz. Terminal B, with ROS on top (`ros && source ~/zbot_ws/install/setup.bash`):
+Stop RViz (Terminal A). Terminal C:
 
 ```
-python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/<ID>.yaml
+ros2 launch zbot_arm so101_bridge.launch.py arm:=<ID>
 ```
 
-- [ ] Pass: soft limits and `torque_limit` logged; no calibration-stamp ERROR
-- [ ] Pass: **no warnings at all** (in particular no `rest_pose not set` or `rest_pose outside soft limits`)
+- [ ] Pass: `[so101_bridge.launch] <ID>: port <PORT>`; soft limits and `torque_limit` logged; no calibration-stamp ERROR
+- [ ] Pass: **no warnings at all** (in particular no `rest_pose not set` or `rest_pose outside the calibrated range`)
 
 ### 4. Mirroring, torque off
 
-Terminal A: `ros2 launch zbot_description display_so101.launch.py gui:=false`. Move each joint by hand.
+Terminal A: `ros2 launch zbot_description display_arms.launch.py arms:=<ID>`. Move each joint by hand.
 
 - [ ] Pass: every joint follows in the right direction, including wrist_roll and gripper
-- [ ] Pass: `ros2 topic hz /joint_states` shows about 30 Hz
+- [ ] Pass: `ros2 topic hz /<ID>/joint_states` shows about 30 Hz
 
 ### 5. Enable and nudge
 
-Hand-pose the arm at mid-range, then:
+Hand-pose the arm at mid-range, then in Terminal D:
 
 ```
-ros2 service call /so101_bridge/enable std_srvs/srv/SetBool "{data: true}"
-ros2 topic echo --once /joint_states
-ros2 topic pub --once /so101_bridge/joint_command sensor_msgs/msg/JointState "{name: [elbow_flex], position: [<current + 0.15>]}"
+ros2 service call /<ID>/so101_bridge/enable std_srvs/srv/SetBool "{data: true}"
+ros2 topic echo --once /<ID>/joint_states
+ros2 topic pub --once /<ID>/so101_bridge/joint_command sensor_msgs/msg/JointState "{name: [elbow_flex], position: [<current + 0.15>]}"
 ```
 
-Positions are in radians, not degrees (90° = 1.571). Take the current value from `/joint_states`, not from step_joints.py. Send the original value back afterwards.
+Positions are in radians, not degrees (90° = 1.571). Take the current value from `/<ID>/joint_states`, not from step_joints.py. Send the original value back afterwards.
 
 - [ ] Pass: enable answers `Torque ON (limit …)`; no jump on enable; elbow moves about 9° smoothly each way and holds
 - [ ] If `torque_limit: 300` was set: remove it, restart the bridge, and repeat this check at 1000
@@ -92,7 +94,7 @@ Positions are in radians, not degrees (90° = 1.571). Take the current value fro
 ### 6. Clamp
 
 ```
-ros2 topic pub --once /so101_bridge/joint_command sensor_msgs/msg/JointState "{name: [elbow_flex], position: [3.0]}"
+ros2 topic pub --once /<ID>/so101_bridge/joint_command sensor_msgs/msg/JointState "{name: [elbow_flex], position: [3.0]}"
 ```
 
 - [ ] Pass: log shows `target … clamped to …`; joint stops at the soft limit, short of the hard stop
@@ -107,16 +109,16 @@ Hold the forearm firmly, then send elbow_flex 0.5 rad away from its current valu
 ### 8. Release
 
 ```
-ros2 service call /so101_bridge/enable std_srvs/srv/SetBool "{data: false}"
+ros2 service call /<ID>/so101_bridge/enable std_srvs/srv/SetBool "{data: false}"
 ```
 
 - [ ] Pass: arm glides to rest, pauses about 1 s, goes limp
 
 ### 9. Ctrl-C
 
-Re-enable, move a joint, then Ctrl-C the bridge while torque is still on. Do not call enable false first.
+Re-enable, move a joint, then press Ctrl-C **once** in Terminal C while torque is still on. Do not call enable false first.
 
-- [ ] Pass: prints `Returning to rest pose...` then `At rest, torque OFF`
+- [ ] Pass: prints `Returning to rest pose...` then `At rest, torque OFF`, and the launch exits cleanly (no "sending SIGTERM")
 
 ### 10. Refusal checks
 
@@ -128,6 +130,12 @@ Re-enable, move a joint, then Ctrl-C the bridge while torque is still on. Do not
 
 - [ ] Pass: bridge logs the "calibration changed" ERROR, and enable true is refused
 - [ ] Stamp restored
+
+## After the 10 checks (not part of sign-off)
+
+**Two arms at once.** Both bridges in their own terminals, then `ros2 launch zbot_description display_arms.launch.py`. Each model follows only its own arm; `ros2 node list` shows `/zbot_follower_1/so101_bridge` and `/zbot_follower_2/so101_bridge`.
+
+**Slider teleop.** Torque off, `ros2 launch zbot_arm so101_sliders.launch.py arm:=<ID>`, then enable. Opening the slider window doesn't move the arm; each slider moves its joint. Never press Randomize.
 
 ## Sign-off
 

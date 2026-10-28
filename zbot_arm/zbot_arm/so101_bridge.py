@@ -1,26 +1,29 @@
 """so101_bridge — ROS 2 bridge for the real SO-101 follower.
 
-Always publishes the arm's joint positions on /joint_states. Starts limp (torque off), so it
+Always publishes the arm's joint positions on joint_states. Starts limp (torque off), so it
 behaves exactly like the old read-only bridge until you enable it; once enabled it follows
 joint targets from ROS.
 
-This node needs BOTH LeRobot (in ~/lerobot-venv) and rclpy (ROS), so it runs from the venv
-with ROS sourced on top, in its own terminal, from ~/zbot_ws/src/zbot:
+Normally started, one per arm and namespaced by the arm ID, with:
 
-    lr && ros && source ~/zbot_ws/install/setup.bash
+    ros2 launch zbot_arm so101_bridge.launch.py arm:=<ID>
+
+(see that file and runbooks/so101_arm.md). For debugging, single arm, no namespace, from
+~/zbot_ws/src/zbot with the venv active and ROS sourced on top:
+
     python -m zbot_arm.so101_bridge --ros-args --params-file zbot_arm/config/zbot_follower_1.yaml
 
 Each arm has its own params file, zbot_arm/config/<robot_id>.yaml, holding its robot_id,
 port and everything that depends on its calibration (offsets, rest pose). It is written by
 arm_lab/post_calibrate.py. Re-run that script after EVERY lerobot-calibrate;
 if the calibration has changed since the file was written, the bridge logs an ERROR and
-refuses ~/enable (it still publishes /joint_states).
+refuses ~/enable (it still publishes joint_states).
 
-Interfaces:
-    pub  /joint_states                  sensor_msgs/JointState  URDF radians, every tick
-    sub  /so101_bridge/joint_command    sensor_msgs/JointState  URDF radians; partial OK
-    srv  /so101_bridge/enable           std_srvs/SetBool        true  = torque on, hold pose
-                                                                false = go to rest, release
+Interfaces (relative names; under the launch file they sit in /<ID>/):
+    pub  joint_states                  sensor_msgs/JointState  URDF radians, every tick
+    sub  so101_bridge/joint_command    sensor_msgs/JointState  URDF radians; partial OK
+    srv  so101_bridge/enable           std_srvs/SetBool        true  = torque on, hold pose
+                                                               false = go to rest, release
 
 Parameters (limits and rest pose are in LeRobot units — degrees, gripper 0-100; topics are
 URDF radians):
@@ -30,7 +33,7 @@ URDF radians):
     signs             per-joint sign, URDF order below              ([1,1,1,1,1,1])
     offsets_deg       per-joint offset added after the sign, degrees (DEFAULT_OFFSETS_DEG);
                       gripper offset is ignored. Set by post_calibrate.py.
-    p_gain            servo P gain written at connect               (32, see docs/arm_tuning.md)
+    p_gain            servo P gain written at connect               (16, see docs/arm_tuning.md)
     torque_limit      body-joint servo Torque_Limit, 0-1000, written before every enable
                       (1000 = full). Use ~300 for a first enable on a new or rebuilt arm.
     margin_deg        soft limits sit this far inside the calibrated range (5.0)
@@ -52,6 +55,10 @@ margin_deg. They therefore follow every recalibration automatically. wrist_roll 
 (LeRobot gives it the full turn), so it gets a ±90° default; widen it only as far as the wrist
 cable allows. limit_min/max can only tighten, never widen past calibration.
 
+The rest pose is exempt from margin_deg: folded, a joint rests on its mechanical stop, which is
+the end of its calibrated range. It must lie within the calibrated range minus REST_MARGIN_DEG
+(wrist_roll: within its soft limit). Commands always keep the full margin.
+
 Safety:
   - Commands are ignored until ~/enable true.
   - Enable is REFUSED unless it can verify the arm won't move when torque comes on:
@@ -68,12 +75,14 @@ Safety:
     (collision, stall), or ~1 s of failed bus reads, freezes the arm where it is. Torque stays
     on, so nothing drops; commands are refused until ~/enable true. The gripper is exempt so
     it can squeeze objects. A fault logs every servo's raw goal and present position.
-  - ~/enable false and Ctrl-C ramp to rest_pose, then release torque. Without a rest_pose,
-    enable false releases immediately (support the arm) and Ctrl-C leaves torque ON, holding.
+  - ~/enable false, Ctrl-C, SIGTERM and a closed terminal (SIGHUP) all ramp to rest_pose, then
+    release torque. Without a rest_pose, enable false releases immediately (support the arm)
+    and the others leave torque ON, holding.
 """
 
 import hashlib
 import math
+import signal
 import time
 from pathlib import Path
 
@@ -104,6 +113,15 @@ POST_CAL = "arm_lab/post_calibrate.py"
 
 GOAL_TOL_COUNTS = 20   # goal read-back must be within this of present (~1.8°; arm may drift in hand)
 GOAL_TRIES = 3
+REST_MARGIN_DEG = 1.0  # rest pose may sit this close to a calibrated stop (post_calibrate.py too)
+
+
+def say(text):
+    """print() that can't fail: after a closed terminal, stdout raises EIO."""
+    try:
+        print(text, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 def calib_stamp(path):
@@ -203,8 +221,8 @@ class SO101Bridge(Node):
             from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
         except ImportError as e:
             raise SystemExit(
-                f"Can't import LeRobot ({e}). Run from the venv: lr && ros && "
-                "source ~/zbot_ws/install/setup.bash, then python -m zbot_arm.so101_bridge"
+                f"Can't import LeRobot ({e}). Start it with the launch file, or from the venv: "
+                "lr && ros && source ~/zbot_ws/install/setup.bash, then python -m zbot_arm.so101_bridge"
             )
 
         cfg = SO101FollowerConfig(port=port, id=robot_id, disable_torque_on_disconnect=False,
@@ -234,7 +252,7 @@ class SO101Bridge(Node):
                           f"({stamp_param} -> {stamp_now}). Offsets and rest_pose are STALE: "
                           f"run {POST_CAL}. " +
                           ("allow_stale_calib is set, enabling anyway." if allow_stale else
-                           "Enable is BLOCKED; /joint_states still publishes (RViz may be off)."))
+                           "Enable is BLOCKED; joint_states still publishes (RViz may be off)."))
 
             # --- full calibrated range (no margin): the servo's own position limits
             self.cal = calib_limits(self.robot.bus, 0.0)
@@ -255,12 +273,17 @@ class SO101Bridge(Node):
             else:
                 log.info("torque_limit = 1000 (full). Enable checks: calibrated range + goal read-back.")
 
-            # --- rest pose
+            # --- rest pose: calibrated range minus REST_MARGIN_DEG (wrist_roll: its soft limit)
+            self.rest_lim = calib_limits(self.robot.bus, REST_MARGIN_DEG)
+            self.rest_lim["wrist_roll"] = self.lim["wrist_roll"]
             if len(rest) == 6 and all(math.isfinite(v) for v in rest):
-                outside = [j for j, v in zip(JOINTS, rest) if self.clamp(j, v) != v]
+                rest = dict(zip(JOINTS, rest))
+                outside = [f"{j} {rest[j]:.1f} not in [{lo:.1f}, {hi:.1f}]"
+                           for j, (lo, hi) in self.rest_lim.items() if not lo <= rest[j] <= hi]
                 if outside:
-                    log.warn(f"rest_pose outside soft limits for {outside}; clamped.")
-                self.rest = {j: self.clamp(j, rest[i]) for i, j in enumerate(JOINTS)}
+                    log.warn("rest_pose outside the calibrated range, clamped: " + "; ".join(outside)
+                             + f". Recalibrate with a full sweep, then {POST_CAL}.")
+                self.rest = {j: min(max(rest[j], lo), hi) for j, (lo, hi) in self.rest_lim.items()}
             else:
                 self.rest = None
                 log.warn("rest_pose not set: enable false drops torque immediately, "
@@ -470,7 +493,7 @@ class SO101Bridge(Node):
                 self.torque, self.releasing = False, False
                 self.get_logger().info("At rest, torque OFF.")
 
-    # ---------- shutdown (runs after the ROS context is gone: bus only, print not log)
+    # ---------- shutdown (runs after the ROS context is gone: bus only, say() not log)
     def ramp_blocking(self, goal):
         """Same motion as enable false: slew the setpoint toward goal at the tick rate.
 
@@ -492,16 +515,16 @@ class SO101Bridge(Node):
         try:
             if self.torque:
                 if self.rest is not None and not self.faulted:
-                    print("Returning to rest pose...")
+                    say("Returning to rest pose...")
                     self.ramp_blocking(self.rest)
                     time.sleep(self.settle_s)
                     self.robot.bus.disable_torque()
-                    print("At rest, torque OFF.")
+                    say("At rest, torque OFF.")
                 else:
-                    print("Torque left ON, arm holding. Support it, then cut 12 V "
-                          "or run step_joints.py --read to go limp.")
+                    say("Torque left ON, arm holding. Support it, then cut 12 V "
+                        "or run step_joints.py --read to go limp.")
         except Exception as e:
-            print(f"Shutdown move failed ({e}); torque state unknown, support the arm.")
+            say(f"Shutdown move failed ({e}); torque state unknown, support the arm.")
         finally:
             try:
                 self.robot.disconnect()
@@ -511,6 +534,9 @@ class SO101Bridge(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    # rclpy handles SIGINT and SIGTERM. A closed terminal sends SIGHUP, which by default kills
+    # the process before close() can park the arm. Treat it like Ctrl-C.
+    signal.signal(signal.SIGHUP, lambda *_: rclpy.try_shutdown())
     node = None
     try:
         node = SO101Bridge()
