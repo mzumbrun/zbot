@@ -6,8 +6,8 @@ so anything stored in LeRobot units goes stale: the wrist_roll offset and the re
 (Soft limits are not stored — the bridge derives them from the calibration at startup.)
 
 It writes zbot_arm/config/<id>.yaml (one file per arm, named after its LeRobot id), holding
-robot_id, port, the offsets and the rest pose, stamped with a hash of the calibration file;
-the bridge warns at startup if that stamp no longer matches.
+robot_id, port, the offsets and the rest pose, stamped with a hash of the calibration file.
+If that stamp no longer matches the calibration, the bridge logs an ERROR and refuses ~/enable.
 
 Procedure, arm on 12 V, bridge NOT running (it holds the serial port):
     lerobot-calibrate ...                                    # 1. calibrate as usual
@@ -19,6 +19,9 @@ Procedure, arm on 12 V, bridge NOT running (it holds the serial port):
 The script keeps the arm limp throughout and asks for two poses:
   a. wrist_roll matched to the RViz model (all sliders at 0)  -> wrist_roll offset
   b. the arm folded into its resting position                 -> rest_pose
+     This is where the arm sits on its own, unpowered (folded joints on their stops). It
+     must lie within the calibrated range minus REST_MARGIN_DEG; it is exempt from the
+     soft-limit margin, which only applies to commands. wrist_roll: within ±90.
 Offsets for the other joints are carried over from the existing file (0 by default); if a
 calibration ever leaves another joint off from the model, measure it the same way and edit it.
 """
@@ -35,6 +38,7 @@ REPO = Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO / "zbot_arm" / "config"
 OWNED = ("robot_id", "port", "calib_stamp", "margin_deg", "offsets_deg", "rest_pose")
 WRIST_ROLL_DEFAULT = (-90.0, 90.0)  # bridge default limit for the un-swept wrist_roll
+REST_MARGIN_DEG = 1.0  # same as zbot_arm/so101_bridge.py — keep the two in step
 
 
 def parse_args():
@@ -110,7 +114,7 @@ def write_params(path, params, extras):
         f"    offsets_deg: {fmt_list(params['offsets_deg'])}",
         f"    rest_pose: {fmt_list(params['rest_pose'])}",
     ]
-    if extras:  # hand-added keys (e.g. tighter limit_min / limit_max) are carried over
+    if extras:  # hand-added keys (e.g. torque_limit, tighter limit_min / limit_max) are carried over
         import yaml
         dumped = yaml.safe_dump(extras, default_flow_style=None, sort_keys=False)
         lines += ["    " + ln for ln in dumped.splitlines()]
@@ -141,10 +145,11 @@ def main():
         cpath = calib_path(robot, a.id)
         stamp = calib_stamp(cpath)
         lim = calib_limits(robot.bus, margin)
+        rest_lim = calib_limits(robot.bus, REST_MARGIN_DEG)
 
         print(f"\nCalibration {cpath.name}  stamp {stamp}"
               f"  (file had {existing.get('calib_stamp', 'none')})")
-        print(f"Soft limits the bridge will use (margin {margin:g}°):")
+        print(f"Soft limits the bridge will use for commands (margin {margin:g}°):")
         for j, (lo, hi) in lim.items():
             print(f"  {j:14s} [{lo:7.1f}, {hi:7.1f}]")
         if extras:
@@ -162,16 +167,16 @@ def main():
 
         # b. rest pose
         while True:
-            input("\n[b] Fold the arm into its resting position (supported, won't flop when"
-                  "\n    torque releases; gripper nearly closed), then press Enter: ")
+            input("\n[b] Fold the arm into its resting position and LET GO: it should sit there"
+                  "\n    on its own, unpowered (gripper nearly closed). Then press Enter: ")
             pos = read_pos(robot)
             rest = [pos[j] for j in JOINTS]
-            outside = [f"{j} {v:.1f} not in [{lim[j][0]:.1f}, {lim[j][1]:.1f}]"
-                       for j, v in zip(JOINTS, rest) if not lim[j][0] <= v <= lim[j][1]]
+            outside = [f"{j} {v:.1f} not in [{rest_lim[j][0]:.1f}, {rest_lim[j][1]:.1f}]"
+                       for j, v in zip(JOINTS, rest) if not rest_lim[j][0] <= v <= rest_lim[j][1]]
             print("    rest_pose " + fmt_list(rest))
             if not outside:
                 break
-            print("    Outside the soft limits (the bridge would clamp these):")
+            print("    Outside the calibrated range (the sweep didn't reach this pose):")
             for s in outside:
                 print("      " + s)
             if input("    r to re-pose, Enter to accept anyway: ").strip().lower() != "r":
@@ -185,8 +190,8 @@ def main():
         shown = a.out.relative_to(REPO)
     except ValueError:
         shown = a.out
-    print(f"\nWrote {a.out}\nRun the bridge with:\n"
-          f"  python -m zbot_arm.so101_bridge --ros-args --params-file {shown}")
+    print(f"\nWrote {a.out}\nStart the bridge with:\n"
+          f"  ros2 launch zbot_arm so101_bridge.launch.py arm:={a.id}")
 
 
 if __name__ == "__main__":
