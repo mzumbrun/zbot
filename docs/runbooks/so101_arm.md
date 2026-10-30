@@ -134,9 +134,18 @@ No slider teleop on it.
 
 ## Every `lerobot-calibrate`
 
+Followers are **robots**, leaders are **teleoperators**, and each uses its own flag prefix:
+
 ```
+# Follower
 lerobot-calibrate --robot.type=so101_follower --robot.port=<PORT> --robot.id=<ID>
+
+# Leader
+lerobot-calibrate --teleop.type=so101_leader --teleop.port=<PORT> --teleop.id=<ID>
 ```
+
+- `<PORT>` is a full device path (`/dev/so101_leader_1` or `/dev/ttyACMx`), not just the name.
+- `<ID>` names the calibration file. Use the same ID later in `lerobot-teleoperate` and `lerobot-record`.
 
 - Sweep **every joint stop to stop**: elbow fully folded and fully open, shoulder_lift its whole
   travel, **gripper fully open and fully closed**.
