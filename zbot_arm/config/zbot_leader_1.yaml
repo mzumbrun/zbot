@@ -1,0 +1,12 @@
+# SO-101 LEADER params (read-only node zbot_arm/so101_leader.py). Hand-written, not by
+# post_calibrate.py. Values are LeRobot units (degrees, gripper 0-100).
+# After every lerobot-calibrate of this leader: re-check the wrist_roll offset and update
+# calib_stamp (runbooks/so101_arm.md, "Leader arm").
+so101_leader:
+  ros__parameters:
+    robot_id: "zbot_leader_1"
+    port: "/dev/so101_leader_1"
+    calib_stamp: ""
+    # wrist_roll starts at zbot_follower_1's offset, which reproduces stock lerobot-teleoperate
+    # (leader degrees -> follower degrees). Measure it against the RViz model to make it exact.
+    offsets_deg: [0.0, 0.0, 0.0, 0.0, 1.8, 0.0]

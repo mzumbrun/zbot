@@ -61,12 +61,16 @@ the end of its calibrated range. It must lie within the calibrated range minus R
 
 Safety:
   - Commands are ignored until ~/enable true.
-  - Enable is REFUSED unless it can verify the arm won't move when torque comes on:
-      1. every body joint is inside its calibrated range (a servo outside its stored position
-         limits clamps its goal to the limit and drives there at full speed);
-      2. goal = present is written in raw counts and READ BACK from every servo (the write is
-         a broadcast with no acknowledgement; a servo at its power-up goal of 0 would drive to
-         its Min limit). Retried 3 times, then refused.
+  - Enable is REFUSED unless it can verify the arm won't jump when torque comes on:
+      1. every body joint is inside its calibrated range, or at most ENABLE_SLACK_DEG past an
+         end. A folded joint resting on its stop often reads a fraction of a degree past the
+         end of the calibration sweep. A servo outside its stored position limits clamps its
+         goal to the limit and drives there at full speed, so further out is refused;
+      2. the goal is written in raw counts, = present clamped into the calibrated range, and
+         READ BACK from every servo (the write is a broadcast with no acknowledgement; a servo
+         at its power-up goal of 0 would drive to its Min limit). Retried 3 times, then
+         refused. A joint within the slack therefore moves at most ENABLE_SLACK_DEG, onto its
+         limit, when torque comes on; the log names it.
     Torque_Limit is written before torque on, and any stale target is discarded.
   - Targets are clamped to the soft limits; unknown joints and non-finite values are rejected.
   - The goal sent to the servos slews toward the target, so a distant target is never a
@@ -114,6 +118,7 @@ POST_CAL = "arm_lab/post_calibrate.py"
 GOAL_TOL_COUNTS = 20   # goal read-back must be within this of present (~1.8°; arm may drift in hand)
 GOAL_TRIES = 3
 REST_MARGIN_DEG = 1.0  # rest pose may sit this close to a calibrated stop (post_calibrate.py too)
+ENABLE_SLACK_DEG = 2.0  # enable accepts a body joint this far past a calibrated end (moves onto it)
 
 
 def say(text):
@@ -256,6 +261,9 @@ class SO101Bridge(Node):
 
             # --- full calibrated range (no margin): the servo's own position limits
             self.cal = calib_limits(self.robot.bus, 0.0)
+            # same limits in raw counts, as stored in each servo's Min/Max_Position_Limit
+            self.raw_lim = {j: (self.robot.bus.calibration[j].range_min,
+                                self.robot.bus.calibration[j].range_max) for j in JOINTS}
 
             # --- soft limits: calibration, optionally tightened by limit_min/max
             self.lim = {}
@@ -317,6 +325,15 @@ class SO101Bridge(Node):
         lo, hi = self.lim[j]
         return min(max(v, lo), hi)
 
+    def clamp_cal(self, j, v):
+        """Clamp to the full calibrated range (the servo's own limits), LeRobot units."""
+        lo, hi = self.cal[j]
+        return min(max(v, lo), hi)
+
+    def clamp_raw(self, j, counts):
+        lo, hi = self.raw_lim[j]
+        return min(max(counts, lo), hi)
+
     def vmax(self, j):
         return self.gvel if j == "gripper" else self.vel
 
@@ -332,17 +349,23 @@ class SO101Bridge(Node):
         return {j: int(self.robot.bus.read(reg, j, normalize=False)) for j in JOINTS}
 
     def preload_goal(self):
-        """With torque OFF: write goal = present (raw) and verify it on every servo.
+        """With torque OFF: write goal = present clamped into the servo's position limits (raw)
+        and verify it on every servo.
 
-        Returns None when every goal matches, else {joint: (goal, present)} for the misses.
+        Clamping matters only for a joint sitting just past a calibrated end (allowed by
+        ENABLE_SLACK_DEG): the servo would clamp the goal itself anyway, and writing the clamped
+        value makes the read-back check exact. Returns None when every goal matches, else
+        {joint: (goal, expected)} for the misses.
         """
         bad = None
         for _ in range(GOAL_TRIES):
             pres = self.raw("Present_Position")
-            self.robot.bus.sync_write("Goal_Position", pres, normalize=False)
+            want = {j: self.clamp_raw(j, pres[j]) for j in JOINTS}
+            self.robot.bus.sync_write("Goal_Position", want, normalize=False)
             goal = self.raw("Goal_Position")
             pres = self.raw("Present_Position")  # re-read: the arm may drift in your hand
-            bad = {j: (goal[j], pres[j]) for j in JOINTS if abs(goal[j] - pres[j]) > GOAL_TOL_COUNTS}
+            want = {j: self.clamp_raw(j, pres[j]) for j in JOINTS}
+            bad = {j: (goal[j], want[j]) for j in JOINTS if abs(goal[j] - want[j]) > GOAL_TOL_COUNTS}
             if not bad:
                 return None
         return bad
@@ -386,33 +409,40 @@ class SO101Bridge(Node):
             try:
                 meas = self.read_pos()
 
-                # 1. inside the calibrated range, or the servo clamps its goal and jumps
+                # 1. inside the calibrated range (+ a little slack), or the servo clamps its goal
+                #    and jumps to the limit at full speed
+                s = ENABLE_SLACK_DEG
                 out = [f"{j} {meas[j]:.1f} not in [{self.cal[j][0]:.1f}, {self.cal[j][1]:.1f}]"
-                       for j in BODY if not self.cal[j][0] <= meas[j] <= self.cal[j][1]]
+                       for j in BODY if not self.cal[j][0] - s <= meas[j] <= self.cal[j][1] + s]
                 if out:
-                    return self.refuse(resp, "Refused: outside calibrated range (servo would jump): "
-                                       + "; ".join(out) + ". Move it into range by hand, or recalibrate.")
+                    return self.refuse(resp, "Refused: outside calibrated range by more than "
+                                       f"{s:g}° (servo would jump): " + "; ".join(out) +
+                                       ". Move it into range by hand, or recalibrate.")
+                nudged = [f"{j} {meas[j]:.1f} -> {self.clamp_cal(j, meas[j]):.1f}"
+                          for j in BODY if meas[j] != self.clamp_cal(j, meas[j])]
 
-                # 2. torque limit, then goal = present, verified by read-back
+                # 2. torque limit, then goal = present (clamped to the limits), verified by read-back
                 for j in BODY:
                     self.robot.bus.write("Torque_Limit", j, self.torque_limit, normalize=False)
                 bad = self.preload_goal()
                 if bad:
                     return self.refuse(resp, "Refused: goal did not verify after "
-                                       f"{GOAL_TRIES} tries (goal, present counts): " +
+                                       f"{GOAL_TRIES} tries (goal, expected counts): " +
                                        ", ".join(f"{j} {g}/{p}" for j, (g, p) in bad.items()) +
                                        ". Check cables; torque state unchanged.")
 
                 meas = self.read_pos()
-                self.setpoint = dict(meas)
-                self.target = dict(meas)
+                self.setpoint = {j: self.clamp_cal(j, v) for j, v in meas.items()}
+                self.target = dict(self.setpoint)
                 self.err_t = {j: 0.0 for j in BODY}
                 self.robot.bus.enable_torque()
             except Exception as e:
                 return self.refuse(resp, f"Refused: bus error during enable ({e}); "
                                          "torque state unchanged.")
             self.torque, self.faulted, self.releasing = True, False, False
-            resp.message = (f"Torque ON (limit {self.torque_limit}), holding current pose.")
+            resp.message = (f"Torque ON (limit {self.torque_limit}), holding current pose." +
+                            (" Just past a calibrated end, moved onto it: " + "; ".join(nudged)
+                             if nudged else ""))
         elif not self.torque:
             resp.message = "Torque already off."
         elif self.rest is not None and not self.faulted:
