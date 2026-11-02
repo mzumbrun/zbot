@@ -311,6 +311,7 @@ class SO101Bridge(Node):
         self.setpoint = dict(meas)
         self.target = dict(meas)
         self.err_t = {j: 0.0 for j in BODY}
+        self.clamping = set()  # joints whose commanded target is currently clamped
         self.last = time.monotonic()
 
         self.pub = self.create_publisher(JointState, "joint_states", 10)
@@ -395,8 +396,15 @@ class SO101Bridge(Node):
                 continue
             v = urdf_to_lerobot(name, rad, self.sign[name], self.off[name])
             c = self.clamp(name, v)
-            if c != v:
-                log.warn(f"{name} target {v:.1f} clamped to {c:.1f}.", throttle_duration_sec=2.0)
+            # Log a clamp when it starts and when it ends, not on every message: under teleop
+            # the leader often sits past a follower limit (e.g. folded onto its stops).
+            if c != v and name not in self.clamping:
+                self.clamping.add(name)
+                log.warn(f"{name} target {v:.1f} clamped to {c:.1f} (soft limit); "
+                         "holding there until the target is back in range.")
+            elif c == v and name in self.clamping:
+                self.clamping.discard(name)
+                log.info(f"{name} target back within limits.")
             self.target[name] = c
 
     def on_enable(self, req, resp):

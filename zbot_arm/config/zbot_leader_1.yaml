@@ -4,9 +4,7 @@
 # calib_stamp (runbooks/so101_arm.md, "Leader arm").
 so101_leader:
   ros__parameters:
-    robot_id: "zbot_leader_1"
-    port: "/dev/so101_leader_1"
-    calib_stamp: ""
-    # wrist_roll starts at zbot_follower_1's offset, which reproduces stock lerobot-teleoperate
-    # (leader degrees -> follower degrees). Measure it against the RViz model to make it exact.
+    robot_id: zbot_leader_1
+    port: /dev/so101_leader_1
+    calib_stamp: 7bf63718a40e
     offsets_deg: [0.0, 0.0, 0.0, 0.0, 1.8, 0.0]

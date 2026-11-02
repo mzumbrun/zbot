@@ -18,10 +18,14 @@ torque OFF (do not enable it), teleop NOT running. ROS terminal, no venv needed:
 
 It prints leader minus follower, in degrees, twice a second. Pose both arms the same by eye
 (a mid pose, nothing on a stop) and press Enter to capture. Then change the pose (wrist up
-vs down, elbow more bent) and capture again. If a joint's difference is about the same in
+vs down, elbow more bent) and capture again, 3 times in all. If a joint's difference is about the same in
 both captures, it is an offset and gets fixed. If it changes a lot between captures, that
 joint turns the opposite way on the two arms (a sign problem, not an offset): it is reported,
 not changed.
+
+Posing by eye is only good to about ±5°, so differences under FIX_DEG are left alone, and
+--captures (3) are averaged. For the last few degrees, watch teleop: a joint that always sits
+the same few degrees off while tracking is an offset; adjust offsets_deg by hand.
 """
 
 import argparse
@@ -40,15 +44,15 @@ JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_ro
 BODY = JOINTS[:-1]
 REPO = Path(__file__).resolve().parent.parent
 CAL_DIR = Path.home() / ".cache/huggingface/lerobot/calibration/teleoperators/so_leader"
-FIX_DEG = 3.0       # differences smaller than this are hand-posing error: left alone
-SIGN_DEG = 10.0     # a difference that changes more than this between captures = sign problem
+FIX_DEG = 6.0       # posing two arms the same by eye is good to ~±5°: smaller is left alone
+SIGN_DEG = 25.0     # a reversed joint differs by tens of degrees, growing with the angle
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--leader", default="zbot_leader_1")
     p.add_argument("--follower", default="zbot_follower_1")
-    p.add_argument("--captures", type=int, default=2)
+    p.add_argument("--captures", type=int, default=3)
     p.add_argument("--write", action="store_true", help="update the leader's YAML")
     return p.parse_args()
 

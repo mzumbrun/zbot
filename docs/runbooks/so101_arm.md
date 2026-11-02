@@ -194,8 +194,16 @@ lerobot-calibrate --teleop.type=so101_leader --teleop.port=<PORT> --teleop.id=<I
 - `<ID>` names the calibration file; the same ID goes in the params file and `arm:=`.
 - Files: followers `~/.cache/huggingface/lerobot/calibration/robots/so_follower/<ID>.json`,
   leaders `…/calibration/teleoperators/so_leader/<ID>.json`.
+- At the **"move to the middle"** step, put **wrist_roll at neutral** (gripper upright, as the
+  RViz model at 0). wrist_roll isn't swept: its zero is wherever it sits at that step, and the
+  servo's one-turn wrap lands 180° from there. Off-neutral (follower 1 was ~90° off) puts the
+  wrap inside the wrist's travel, so it can't reach one stop, and teleop needs a big offset.
 - Sweep **every joint stop to stop**: elbow fully folded and fully open, shoulder_lift its whole
   travel, **gripper fully open and fully closed**.
+- wrist_roll limits: the bridge defaults to ±90. To use more, read each physical stop
+  (`step_joints.py --read`) and set `limit_min`/`limit_max` 5° inside them in the arm's YAML,
+  e.g. `limit_min: [-999.0, -999.0, -999.0, -999.0, -173.0, -999.0]` and `limit_max` the
+  same with +999/+173 (±999 = keep the calibrated limit). post_calibrate keeps these lines.
 - Check the printed table: each body joint should span ~2,200–2,700 counts. A small range
   (e.g. gripper 1843–2047) means that joint wasn't swept; redo it.
 - Follower verify, torque off: `python arm_lab/step_joints.py --read --id <ID> --port <PORT>` and
@@ -219,8 +227,13 @@ limits update themselves.
    - **[b]** Fold the arm to rest and **let go**: it must sit there on its own, unpowered (that's
      what the bridge parks it at before releasing torque). Don't hold it up. Then Enter. The rest
      pose may sit up to 1° from a calibrated stop (commands still keep the 5° margin). If it
-     reports **"Outside the calibrated range"**, the sweep didn't reach the folded pose: press
-     **r**, and if it still fails, recalibrate with a fuller sweep. Never accept it.
+     reports **"Outside the calibrated range"**, press **r** and re-pose. Still outside:
+     - **by more than ~2°**: the sweep missed that stop. Recalibrate, pressing that joint firmly
+       into its stop during the sweep.
+     - **by under ~2°**, after a firm sweep: that's the arm settling past the sweep under gravity
+       and gear backlash (follower 1's folded elbow does this). Accept, then edit that joint's
+       `rest_pose` value in the YAML to the printed limit minus 1 (e.g. limit 96.1 → 95.1). The
+       arm parks there and drops the last degree or two onto its stop on release.
 4. Commit the result:
    ```
    git add zbot_arm/config/<ID>.yaml
@@ -243,18 +256,27 @@ The leader's YAML is hand-written (`so101_leader:` top key; `robot_id`, `port`, 
 `offsets_deg`). Teleop copies URDF radians across, so the leader's offsets must put it in the
 same URDF pose as the follower when the two arms look the same.
 
-1. Leader node and follower 1's bridge running, follower **torque off**.
-2. Pose both arms the same by eye (wrist_roll especially), then compare:
+LeRobot puts each joint's zero at the middle of its calibration sweep. A leader's sweep differs
+from a follower's, so a leader joint can read tens of degrees off (zbot_leader_1's wrist_flex
+was ~80°). Teleop then won't engage until the arms are posed visibly differently.
+
+1. Leader node and follower 1's bridge running, follower **torque off** (don't enable), teleop
+   **not** running.
+2. Measure and write (ROS terminal):
    ```
-   ros2 topic echo --once /zbot_leader_1/joint_states
-   ros2 topic echo --once /zbot_follower_1/joint_states
+   cd ~/zbot_ws/src/zbot
+   python3 arm_lab/leader_offsets.py           # look first
+   python3 arm_lab/leader_offsets.py --write   # then save
    ```
-   Body joints should agree within a few degrees (0.05 rad ≈ 3°). If wrist_roll is off by
-   D degrees (leader − follower), subtract D from the leader's wrist_roll offset.
-3. Set `calib_stamp` to the leader calibration's hash (this clears the startup warning):
-   ```
-   sha1sum ~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/zbot_leader_1.json | cut -c1-12
-   ```
+   For each of 3 captures, pose both arms the same by eye (mid pose, nothing on a stop; change
+   the pose between captures) and press Enter. Joints off by ≥6° on average get their offset
+   fixed, and `calib_stamp` is updated. A joint whose difference changes by ≥25° between
+   captures turns the opposite way on the two arms: a `signs` problem, reported, not fixed.
+   Eyeballing is only good to ~±5°, so don't chase smaller numbers: if a re-run suggests
+   changes of a few degrees, don't `--write` it.
+3. Restart the leader node, then fine-tune in teleop: a joint that always sits the same few
+   degrees off while tracking needs its `offsets_deg` adjusted by hand. zbot_leader_1 (after
+   follower 1's wrist-neutral recalibration): `[0, 0, 0, 0, 1.8, 0]`.
 4. Commit the YAML; `scp` the leader's calibration file to the other laptop (same as followers,
    `teleoperators/so_leader/`).
 
@@ -329,13 +351,14 @@ and every value is silently ignored. The launch file handles that.
 | `Package zbot_arm not found` | `source ~/zbot_ws/install/setup.bash` |
 | `Failed to populate field: must be real number, not str` | Replace the placeholder with a number |
 | ERROR: calibration changed since the params file was made; enable refused | Run `post_calibrate.py` (or copy the calibration file from the other laptop) |
-| Leader WARN: calibration changed since offsets_deg was measured | Redo "Leader arm" steps 2–3 |
+| Leader WARN: calibration changed since offsets_deg was measured | Redo "Leader arm" steps 2–3 (`leader_offsets.py --write`) |
+| Teleop engages only with a joint visibly tens of degrees off | Leader offset not measured: `leader_offsets.py --write` |
 | `Calibration … doesn't match the motors` | Wrong ID, or not calibrated (the leader error prints the path it looked in): run `lerobot-calibrate`, then post-calibration |
 | Teleop stays `Waiting to engage` | Pose the leader closer to the follower; the log shows which joint is off. A constant wrist_roll gap → fix the leader's offset |
 | Teleop `DEADMAN` | Leader node stopped or its reads are failing; check its terminal, USB and 7.4 V |
 | `Refused: outside calibrated range by more than 2°` | Move that joint into range by hand and enable again; if its normal pose is outside, recalibrate with a full sweep. Up to 2° past an end (a folded joint on its stop) is accepted: the joint moves onto its limit and the enable reply says `moved onto it` |
 | `Refused: goal did not verify` | Torque stays off. Reseat/replace cables to the named servo; run `servo_regs.py --write-test` |
-| `rest_pose outside the calibrated range` warning at startup | Calibration sweep didn't reach the folded pose: recalibrate with a full sweep, then post_calibrate with no warnings |
+| `rest_pose outside the calibrated range` warning at startup | Under ~2° out: edit that `rest_pose` value to the limit minus 1. More: recalibrate with a firm stop-to-stop sweep, then post_calibrate |
 | setup-motors can't find a servo | Only one servo may be on the board; check cable and the servo's other port |
 | `Command ignored: torque off, faulted, or releasing` | Call `enable true` (expected while sliders or teleop run with torque off) |
 | `ros2 service call /so101_bridge/enable` hangs | Old name: services are under `/<ID>/so101_bridge/…` now |
@@ -346,5 +369,6 @@ and every value is silently ignored. The launch file handles that.
 | `std_srvs` not found | `sudo apt install ros-jazzy-std-srvs` |
 | `Couldn't parse params file …` | YAML indentation: values need 4 spaces, `ros__parameters:` 2, no tabs |
 | `elbow_flex target 5000+ clamped` | You sent degrees; the topic takes radians (90° = 1.571) |
+| `<joint> target … clamped to … (soft limit)` during teleop | Normal near the ends: the leader went past the follower's soft limit (5° inside its calibrated end) and the follower holds at the limit. Logged once per clamp, with `back within limits` when it ends. Only a problem if it clamps well inside normal travel (short calibration sweep) |
 
 *Last updated: 2026-10-30*
