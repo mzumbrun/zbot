@@ -1,0 +1,9 @@
+# SO-101 LEADER params (read-only node zbot_arm/so101_leader.py). Hand-written, not by
+# post_calibrate.py. Values are LeRobot units (degrees, gripper 0-100).
+# After every lerobot-calibrate of this leader: python3 arm_lab/leader_offsets.py --leader zbot_leader_2 --write
+so101_leader:
+  ros__parameters:
+    robot_id: zbot_leader_2
+    port: /dev/so101_leader_2
+    calib_stamp: 6dba46f5d769
+    offsets_deg: [0.0, 0.0, 0.0, 0.0, -0.0, 0.0]

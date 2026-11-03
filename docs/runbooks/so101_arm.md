@@ -1,8 +1,8 @@
 # SO-101 arms (followers and leaders)
 
 Followers: `zbot_follower_1` on `/dev/so101_follower`, `zbot_follower_2` on `/dev/so101_follower_2`,
-**12 V**. Leaders: `zbot_leader_1` on `/dev/so101_leader_1`, **7.4 V**. Never put a 12 V supply on
-a leader board; label every supply at the plug end.
+**12 V**. Leaders: `zbot_leader_1` on `/dev/so101_leader_1`, `zbot_leader_2` on `/dev/so101_leader_2`,
+**7.4 V**. Never put a 12 V supply on a leader board; label every supply at the plug end.
 
 Driver: one launch for every arm, `zbot_arm/launch/so101_bridge.launch.py arm:=<ID>`. The arm's
 params file `zbot_arm/config/<ID>.yaml` picks the node by its top key:
@@ -69,7 +69,8 @@ cd ~/zbot_ws && colcon build --symlink-install --packages-select zbot_arm zbot_d
 4. New board only: get its serial (`udevadm info -q property -n /dev/ttyACM0 | grep ID_SERIAL_SHORT`),
    add a line to the repo's `99-so101.rules` (`SYMLINK+="so101_<name>"`), run `./system/setup.sh`,
    commit, and run `setup.sh` on the other laptop after pulling. Check: `ls -l /dev/so101_*`.
-5. Then **calibrate** (below). Follower: run the checklist from check 2. Leader: "Leader arm" below.
+5. Then **calibrate** (below). Follower: run the checklist from check 2. Leader: "Leader arm" below
+   (a new leader also needs its YAML written first, step 0 there).
 
 A replaced servo has a new encoder zero, so the **whole arm** must be recalibrated.
 
@@ -85,6 +86,7 @@ terminals; the launch file starts the node with `~/lerobot-venv/bin/python`.
    ros2 launch zbot_arm so101_bridge.launch.py arm:=zbot_follower_1
    ros2 launch zbot_arm so101_bridge.launch.py arm:=zbot_follower_2    # second terminal
    ros2 launch zbot_arm so101_bridge.launch.py arm:=zbot_leader_1      # third terminal
+   ros2 launch zbot_arm so101_bridge.launch.py arm:=zbot_leader_2      # fourth terminal
    ```
    Check the startup log: the `[so101_bridge.launch]` line names the right node and port; no ERROR
    about the calibration stamp; **no warnings**; soft limits sane; the `torque_limit` line.
@@ -253,20 +255,41 @@ limits update themselves.
 ## Leader arm: params file and wrist_roll check (after every leader calibrate)
 
 The leader's YAML is hand-written (`so101_leader:` top key; `robot_id`, `port`, `calib_stamp`,
-`offsets_deg`). Teleop copies URDF radians across, so the leader's offsets must put it in the
-same URDF pose as the follower when the two arms look the same.
+`offsets_deg`); `post_calibrate.py` is for followers only. Teleop copies URDF radians across, so
+the leader's offsets must put it in the same URDF pose as the follower when the two arms look
+the same.
 
 LeRobot puts each joint's zero at the middle of its calibration sweep. A leader's sweep differs
 from a follower's, so a leader joint can read tens of degrees off (zbot_leader_1's wrist_flex
 was ~80°). Teleop then won't engage until the arms are posed visibly differently.
 
-1. Leader node and follower 1's bridge running, follower **torque off** (don't enable), teleop
-   **not** running.
-2. Measure and write (ROS terminal):
+0. **New leader only: write its YAML.** `leader_offsets.py` reads the file before measuring, so
+   it must exist first. Copy `zbot_leader_1.yaml` to `zbot_arm/config/<ID>.yaml` and change
+   `robot_id` and `port`, leaving `calib_stamp` empty. The offsets are placeholders; step 2
+   replaces any that are ≥6° off. Example for leader 2:
+   ```yaml
+   # SO-101 LEADER params (read-only node zbot_arm/so101_leader.py). Hand-written, not by
+   # post_calibrate.py. Values are LeRobot units (degrees, gripper 0-100).
+   # After every lerobot-calibrate of this leader:
+   #   python3 arm_lab/leader_offsets.py --leader zbot_leader_2 --follower <follower> --write
+   so101_leader:
+     ros__parameters:
+       robot_id: "zbot_leader_2"
+       port: "/dev/so101_leader_2"
+       calib_stamp: ""
+       offsets_deg: [0.0, 0.0, 0.0, 0.0, -90.2, 0.0]
+   ```
+   A new YAML needs one build: `cd ~/zbot_ws && colcon build --symlink-install --packages-select zbot_arm`.
+1. Leader node and the bridge of the follower it will drive running, follower **torque off**
+   (don't enable), teleop **not** running.
+2. Measure and write (ROS terminal). The script defaults to `zbot_leader_1` vs
+   `zbot_follower_1`; for any other pair pass `--leader` and `--follower`:
    ```
    cd ~/zbot_ws/src/zbot
-   python3 arm_lab/leader_offsets.py           # look first
-   python3 arm_lab/leader_offsets.py --write   # then save
+   python3 arm_lab/leader_offsets.py                       # leader 1 vs follower 1: look first
+   python3 arm_lab/leader_offsets.py --write               # then save
+   python3 arm_lab/leader_offsets.py --leader zbot_leader_2 --follower zbot_follower_2           # other pair
+   python3 arm_lab/leader_offsets.py --leader zbot_leader_2 --follower zbot_follower_2 --write
    ```
    For each of 3 captures, pose both arms the same by eye (mid pose, nothing on a stop; change
    the pose between captures) and press Enter. Joints off by ≥6° on average get their offset
@@ -277,8 +300,13 @@ was ~80°). Teleop then won't engage until the arms are posed visibly differentl
 3. Restart the leader node, then fine-tune in teleop: a joint that always sits the same few
    degrees off while tracking needs its `offsets_deg` adjusted by hand. zbot_leader_1 (after
    follower 1's wrist-neutral recalibration): `[0, 0, 0, 0, 1.8, 0]`.
-4. Commit the YAML; `scp` the leader's calibration file to the other laptop (same as followers,
-   `teleoperators/so_leader/`).
+4. Commit the YAML (`git add zbot_arm/config/<ID>.yaml`), then copy the leader's calibration
+   file to the other laptop:
+   ```
+   scp ~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/<ID>.json \
+       <other-laptop>:~/.cache/huggingface/lerobot/calibration/teleoperators/so_leader/
+   ```
+   On the other laptop, `git pull` and (new YAML) `colcon build` too.
 
 ## First enable on a new or rebuilt arm
 
@@ -343,7 +371,9 @@ and every value is silently ignored. The launch file handles that.
 | `Missing motor IDs` … found list `{}` | Port opened but no servo answered: that arm's supply is off (most often), or the board-to-base servo cable is loose |
 | `invalid choice: 'so101_leader'` for `--robot.type` | A leader is a teleoperator: use `--teleop.type/port/id` |
 | `ls: cannot access '/dev/so101_…'` | Check the spelling, then `ls -l /dev/so101_*`; no symlink yet → add the udev rule |
-| `No params file …/config/<ID>.yaml` | Follower: run post_calibrate. Leader: write it (Leader arm). New YAML needs a `colcon build` |
+| `No params file …/config/<ID>.yaml` | Follower: run post_calibrate. Leader: write it by hand ("Leader arm" step 0). New YAML needs a `colcon build` |
+| `leader_offsets.py`: `FileNotFoundError … config/<ID>.yaml` | The leader's YAML doesn't exist yet: "Leader arm" step 0 |
+| `leader_offsets.py`: `No joint_states from ['zbot_leader_1']` while working on another leader | Pass `--leader <ID>` (and `--follower <ID>`); the defaults are leader 1 / follower 1 |
 | `expected exactly one top-level section` | The YAML's top key must be `so101_bridge:` (follower) or `so101_leader:` (leader) |
 | `…: no 'port'` | Add `port: "/dev/so101_…"` under `ros__parameters`, or re-run post_calibrate |
 | `robot_id is '…' but arm:=…` | Wrong `arm:=`, or the YAML belongs to another arm |
@@ -371,4 +401,4 @@ and every value is silently ignored. The launch file handles that.
 | `elbow_flex target 5000+ clamped` | You sent degrees; the topic takes radians (90° = 1.571) |
 | `<joint> target … clamped to … (soft limit)` during teleop | Normal near the ends: the leader went past the follower's soft limit (5° inside its calibrated end) and the follower holds at the limit. Logged once per clamp, with `back within limits` when it ends. Only a problem if it clamps well inside normal travel (short calibration sweep) |
 
-*Last updated: 2026-10-30*
+*Last updated: 2026-11-03*
