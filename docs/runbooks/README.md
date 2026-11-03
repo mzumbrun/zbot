@@ -6,6 +6,8 @@ come up at certain times (after a calibration, on a new laptop, after a fault).
 | File | Covers |
 |---|---|
 | [so101_arm.md](so101_arm.md) | SO-101 follower: daily start/stop, enabling and commanding, after every calibration, faults |
+| [so101_arm_checklist.md](so101_arm_checklist.md) | Printable 10-check bring-up sheet, one per SO-101 arm built or recalibrated |
+| [cameras.md](cameras.md) | USB cameras: udev names, adding a camera, starting camera nodes, bandwidth check |
 | [dev_env.md](dev_env.md) | Laptops, venv vs ROS terminals, building, keeping Victus and Upc in sync |
 
 ## Conventions

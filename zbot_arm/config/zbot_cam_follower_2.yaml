@@ -1,0 +1,22 @@
+# zbot_cam_follower_2 — IR-capable camera (Sonix 0c45:6369) for zbot_follower_2.
+#   ros2 launch zbot_arm zbot_cam.launch.py cam:=zbot_cam_follower_2
+# Publishes /zbot_cam_follower_2/image_raw (+ /camera_info).
+#
+# Top key usb_cam: (the node). The launch file checks camera_name matches cam:= and that
+# video_device is a udev name (/dev/zbot_cam_…), then applies these under /<cam>/usb_cam.
+#
+# Format: MJPEG 640x480 @ 30 fps. Raw YUYV only reaches 30 fps at 640x480 and takes ~150 Mbit/s
+# of USB 2.0, which leaves no room for a second camera on the hub. 1280x720 MJPEG @ 30 is the
+# step up if more detail is ever needed.
+usb_cam:
+  ros__parameters:
+    camera_name: "zbot_cam_follower_2"
+    video_device: "/dev/zbot_cam_follower_2"
+    frame_id: "zbot_cam_follower_2_optical_frame"
+    pixel_format: "mjpeg2rgb"
+    image_width: 640
+    image_height: 480
+    framerate: 30.0
+    io_method: "mmap"
+    # Empty = no calibration yet (usb_cam warns once; harmless until we measure with it).
+    camera_info_url: ""

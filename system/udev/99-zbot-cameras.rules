@@ -1,0 +1,30 @@
+# Zbot cameras: stable names /dev/zbot_cam_<name> for the V4L2 capture node.
+# Installed by system/setup.sh into /etc/udev/rules.d/. Runbook: docs/runbooks/cameras.md
+#
+# How each camera is matched (pick the first that applies):
+#   1. Real unique serial (ID_SERIAL_SHORT is a serial number): vendor + model + serial.
+#      Any port, any machine.
+#   2. Generic serial, but the only camera of its model on that machine: vendor + model.
+#      Any port, any machine (laptop hub or a Pi's own ports).
+#   3. Two cameras of the same model with generic serials on one machine: vendor + model +
+#      USB port (ID_PATH). Port paths differ per machine (laptop hub vs Pi), so those rules are
+#      written per machine.
+# Both current cameras are case 2: different chips, no real serial.
+#
+# ID_V4L_CAPABILITIES==":capture:" picks the image node; each camera also creates a metadata
+# node, which must not get the name.
+#
+# RUN (both cameras) sets controls the camera forgets on unplug: 60 Hz anti-flicker (US mains) and a fixed
+# 30 fps (no longer exposures in low light).
+
+# zbot_follower_1 camera: SO-100 kit camera, Sonix 05a3:9230, serial "USB2.0_CAM1" (generic)
+SUBSYSTEM=="video4linux", ENV{ID_V4L_CAPABILITIES}==":capture:", \
+  ENV{ID_VENDOR_ID}=="05a3", ENV{ID_MODEL_ID}=="9230", \
+  GROUP="video", MODE="0660", SYMLINK+="zbot_cam_follower_1", \
+  RUN+="/usr/bin/v4l2-ctl -d $devnode -c power_line_frequency=2 -c exposure_dynamic_framerate=0"
+
+# zbot_follower_2 camera: IR-capable, Sonix 0c45:6369, serial "USB_2.0_Camera" (generic)
+SUBSYSTEM=="video4linux", ENV{ID_V4L_CAPABILITIES}==":capture:", \
+  ENV{ID_VENDOR_ID}=="0c45", ENV{ID_MODEL_ID}=="6369", \
+  GROUP="video", MODE="0660", SYMLINK+="zbot_cam_follower_2", \
+  RUN+="/usr/bin/v4l2-ctl -d $devnode -c power_line_frequency=2 -c exposure_dynamic_framerate=0"

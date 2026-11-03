@@ -39,3 +39,13 @@ Capture 2: pose both arms the same again, but differently from capture 1, for ex
 It prints the result table and writes zbot_leader_1.yaml.
 
 ==========================
+No need to move files one by one. tar extracts the whole thing in one go, putting each file in its right place, because the folders are stored inside the tarball.
+
+bash
+cd ~/zbot_ws/src/zbot
+tar tzf ~/Downloads/zbot_cameras_2026-11-02.tar.gz     # optional: list what's inside first
+tar xzf ~/Downloads/zbot_cameras_2026-11-02.tar.gz     # extract everything into the repo
+
+Running it from ~/zbot_ws/src/zbot matters, because the paths inside the tarball start there. The x means extract, z means it’s gzipped, and f names the file. It creates any folders that don’t exist yet. It replaces files that already exist;
+
+============================
